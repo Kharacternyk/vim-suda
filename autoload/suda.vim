@@ -152,7 +152,7 @@ function! suda#write(expr, ...) abort range
     else
       " `bs=1048576` is equivalent to `bs=1M` for GNU dd or `bs=1m` for BSD dd
       " Both `bs=1M` and `bs=1m` are non-POSIX
-      let result = suda#system(['dd', 'if='.tempfile, 'of='.path, 'bs=1048576'])
+      let result = suda#system(['uutils-dd', 'if='.tempfile, 'of='.path, 'bs=1048576'])
     endif
     if v:shell_error
       throw result
