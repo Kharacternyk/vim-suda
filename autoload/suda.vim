@@ -185,7 +185,6 @@ function! suda#BufReadCmd() abort
           \ 'range': '1',
           \})
     silent lockmarks 0delete _
-    setlocal buftype=acwrite
     setlocal nomodified
     filetype detect
     redraw | echo echo_message
