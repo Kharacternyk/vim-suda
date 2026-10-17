@@ -33,6 +33,16 @@ function! suda#systemlist(cmd, ...) abort
   if v:shell_error == 0
     return result
   endif
+  if has('nvim') && g:suda#executable ==# 'run0' && !a:0
+    let auth_job = jobstart([g:suda#executable, 'true'], {'pty': v:true})
+    if auth_job > 0 && jobwait([auth_job], -1)[0] == 0
+      let cmd = s:get_command([], a:cmd)
+      let result = systemlist(cmd)
+      if v:shell_error == 0
+        return result
+      endif
+    endif
+  endif
   let ask_pass = 1
   " Let's try running a command non-interactively. If it works, we have a sudo
   " timestamp that has not timed out yet. In this case there is no need to ask
