@@ -1,3 +1,50 @@
+let s:nixos_bin = '/run/current-system/sw/bin'
+let s:run0_path = s:nixos_bin . '/run0'
+let s:sh_path = s:nixos_bin . '/sh'
+let s:cat_path = s:nixos_bin . '/cat'
+let s:dd_path = s:nixos_bin . '/uutils-dd'
+
+function! s:use_run0() abort
+  return has('nvim') && (g:suda#executable ==# 'run0' || g:suda#executable ==# s:run0_path)
+endfunction
+
+function! s:run0_systemlist(cmd) abort
+  if empty(a:cmd) || index([s:cat_path, s:dd_path], a:cmd[0]) < 0
+    return {'status': 1, 'output': ['Refusing unexpected run0 command']}
+  endif
+  for binary in [s:run0_path, s:sh_path, a:cmd[0]]
+    if !executable(binary)
+      return {'status': 1, 'output': ['Executable not found: ' . binary]}
+    endif
+  endfor
+
+  let outfile = tempname()
+  try
+    " The unprivileged shell opens stdout before exec'ing run0. External values
+    " are passed only as argv entries; none are interpolated into shell code.
+    call writefile([], outfile, 'b')
+    let argv = [
+          \ s:sh_path, '-c',
+          \ 'out=$1; shift; exec "$@" >"$out"',
+          \ 'suda-run0', outfile, s:run0_path, '--pipe',
+          \ ] + a:cmd
+    if &verbose
+      echomsg '[suda]' string(argv)
+    endif
+    let job = jobstart(argv, {'pty': v:true})
+    if job <= 0
+      return {'status': 1, 'output': ['Failed to start run0 PTY job']}
+    endif
+    let status = jobwait([job], -1)[0]
+    if status != 0
+      return {'status': status, 'output': ['run0 exited with status ' . status]}
+    endif
+    return {'status': 0, 'output': readfile(outfile, 'b')}
+  finally
+    silent call delete(outfile)
+  endtry
+endfunction
+
 " {opts} is a list of command line options
 " {cmd} is the argv list for the process to run
 " {opts} should be *sudo-specific*, while {cmd} is passed to any suda#executable
@@ -32,16 +79,6 @@ function! suda#systemlist(cmd, ...) abort
   let result = a:0 ? systemlist(cmd, a:1) : systemlist(cmd)
   if v:shell_error == 0
     return result
-  endif
-  if has('nvim') && g:suda#executable ==# 'run0' && !a:0
-    let auth_job = jobstart([g:suda#executable, 'true'], {'pty': v:true})
-    if auth_job > 0 && jobwait([auth_job], -1)[0] == 0
-      let cmd = s:get_command([], a:cmd)
-      let result = systemlist(cmd)
-      if v:shell_error == 0
-        return result
-      endif
-    endif
   endif
   let ask_pass = 1
   " Let's try running a command non-interactively. If it works, we have a sudo
@@ -103,8 +140,15 @@ function! suda#read(expr, ...) abort range
   try
     " NOTE: use systemlist to avoid changing newlines. Get the results of the
     " command (as a list) to avoid having to spawn a shell to do a redirection
-    let resultlist = suda#systemlist(['cat', fnamemodify(path, ':p')])
-    if v:shell_error
+    if s:use_run0()
+      let run0_result = s:run0_systemlist([s:cat_path, fnamemodify(path, ':p')])
+      let resultlist = run0_result.output
+      let failed = run0_result.status != 0
+    else
+      let resultlist = suda#systemlist(['cat', fnamemodify(path, ':p')])
+      let failed = v:shell_error
+    endif
+    if failed
       throw resultlist
     else
       " write with 'b' to ensure contents are the same
@@ -159,12 +203,21 @@ function! suda#write(expr, ...) abort range
       let result = suda#system(
             \ [tee_cmd, path],
             \ join(readfile(tempfile, 'b'), "\n") )
+      let failed = v:shell_error
+    elseif s:use_run0()
+      " `bs=1048576` is equivalent to `bs=1M` for GNU dd or `bs=1m` for BSD dd
+      " Both `bs=1M` and `bs=1m` are non-POSIX
+      let run0_result = s:run0_systemlist([
+            \ s:dd_path, 'if='.tempfile, 'of='.path, 'bs=1048576'])
+      let result = join(run0_result.output, "\n")
+      let failed = run0_result.status != 0
     else
       " `bs=1048576` is equivalent to `bs=1M` for GNU dd or `bs=1m` for BSD dd
       " Both `bs=1M` and `bs=1m` are non-POSIX
       let result = suda#system(['uutils-dd', 'if='.tempfile, 'of='.path, 'bs=1048576'])
+      let failed = v:shell_error
     endif
-    if v:shell_error
+    if failed
       throw result
     endif
     " Rewrite message with a correct file name
