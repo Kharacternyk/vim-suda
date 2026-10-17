@@ -1,48 +1,33 @@
 let s:nixos_bin = '/run/current-system/sw/bin'
 let s:run0_path = s:nixos_bin . '/run0'
-let s:sh_path = s:nixos_bin . '/sh'
-let s:cat_path = s:nixos_bin . '/cat'
 let s:dd_path = s:nixos_bin . '/uutils-dd'
 
 function! s:use_run0() abort
   return has('nvim') && (g:suda#executable ==# 'run0' || g:suda#executable ==# s:run0_path)
 endfunction
 
-function! s:run0_systemlist(cmd) abort
-  if empty(a:cmd) || index([s:cat_path, s:dd_path], a:cmd[0]) < 0
-    return {'status': 1, 'output': ['Refusing unexpected run0 command']}
-  endif
-  for binary in [s:run0_path, s:sh_path, a:cmd[0]]
+function! s:run0_dd(src, dst) abort
+  for binary in [s:run0_path, s:dd_path]
     if !executable(binary)
-      return {'status': 1, 'output': ['Executable not found: ' . binary]}
+      return 1
     endif
   endfor
 
-  let outfile = tempname()
-  try
-    " The unprivileged shell opens stdout before exec'ing run0. External values
-    " are passed only as argv entries; none are interpolated into shell code.
-    call writefile([], outfile, 'b')
-    let argv = [
-          \ s:sh_path, '-c',
-          \ 'out=$1; shift; exec "$@" >"$out"',
-          \ 'suda-run0', outfile, s:run0_path, '--pipe',
-          \ ] + a:cmd
-    if &verbose
-      echomsg '[suda]' string(argv)
-    endif
-    let job = jobstart(argv, {'pty': v:true})
-    if job <= 0
-      return {'status': 1, 'output': ['Failed to start run0 PTY job']}
-    endif
-    let status = jobwait([job], -1)[0]
-    if status != 0
-      return {'status': status, 'output': ['run0 exited with status ' . status]}
-    endif
-    return {'status': 0, 'output': readfile(outfile, 'b')}
-  finally
-    silent call delete(outfile)
-  endtry
+  let argv = [
+        \ s:run0_path,
+        \ s:dd_path,
+        \ 'if=' . a:src,
+        \ 'of=' . a:dst,
+        \ 'bs=1048576',
+        \ ]
+  if &verbose
+    echomsg '[suda]' string(argv)
+  endif
+  let job = jobstart(argv, {'pty': v:true})
+  if job <= 0
+    return 1
+  endif
+  return jobwait([job], -1)[0]
 endfunction
 
 " {opts} is a list of command line options
@@ -141,33 +126,35 @@ function! suda#read(expr, ...) abort range
     " NOTE: use systemlist to avoid changing newlines. Get the results of the
     " command (as a list) to avoid having to spawn a shell to do a redirection
     if s:use_run0()
-      let run0_result = s:run0_systemlist([s:cat_path, fnamemodify(path, ':p')])
-      let resultlist = run0_result.output
-      let failed = run0_result.status != 0
+      " Create the destination as the unprivileged user first so the root
+      " uutils-dd process only opens an existing user-owned temporary file.
+      call writefile([], tempfile, 'b')
+      let status = s:run0_dd(fnamemodify(path, ':p'), tempfile)
+      if status != 0
+        throw 'run0 exited with status ' . status
+      endif
     else
       let resultlist = suda#systemlist(['cat', fnamemodify(path, ':p')])
-      let failed = v:shell_error
-    endif
-    if failed
-      throw resultlist
-    else
+      if v:shell_error
+        throw resultlist
+      endif
       " write with 'b' to ensure contents are the same
       call writefile(resultlist, tempfile, 'b')
-      let echo_message = execute(printf(
-            \ '%sread %s %s',
-            \ options.range,
-            \ options.cmdarg,
-            \ fnameescape(tempfile),
-            \))
-      " Rewrite message with a correct file name
-      let echo_message = substitute(
-            \ echo_message,
-            \ s:escape_patterns(tempfile),
-            \ fnamemodify(path, ':~'),
-            \ 'g',
-            \)
-      return substitute(echo_message, '^\r\?\n', '', '')
     endif
+    let echo_message = execute(printf(
+          \ '%sread %s %s',
+          \ options.range,
+          \ options.cmdarg,
+          \ fnameescape(tempfile),
+          \))
+    " Rewrite message with a correct file name
+    let echo_message = substitute(
+          \ echo_message,
+          \ s:escape_patterns(tempfile),
+          \ fnamemodify(path, ':~'),
+          \ 'g',
+          \)
+    return substitute(echo_message, '^\r\?\n', '', '')
   finally
     silent call delete(tempfile)
   endtry
@@ -205,12 +192,9 @@ function! suda#write(expr, ...) abort range
             \ join(readfile(tempfile, 'b'), "\n") )
       let failed = v:shell_error
     elseif s:use_run0()
-      " `bs=1048576` is equivalent to `bs=1M` for GNU dd or `bs=1m` for BSD dd
-      " Both `bs=1M` and `bs=1m` are non-POSIX
-      let run0_result = s:run0_systemlist([
-            \ s:dd_path, 'if='.tempfile, 'of='.path, 'bs=1048576'])
-      let result = join(run0_result.output, "\n")
-      let failed = run0_result.status != 0
+      let status = s:run0_dd(tempfile, path)
+      let failed = status != 0
+      let result = failed ? 'run0 exited with status ' . status : ''
     else
       " `bs=1048576` is equivalent to `bs=1M` for GNU dd or `bs=1m` for BSD dd
       " Both `bs=1M` and `bs=1m` are non-POSIX
