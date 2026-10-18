@@ -9,6 +9,7 @@ endfunction
 function! s:run0_dd(src, dst) abort
   for binary in [s:run0_path, s:dd_path]
     if !executable(binary)
+      echomsg '[suda] missing executable: ' . binary
       return 1
     endif
   endfor
@@ -23,11 +24,26 @@ function! s:run0_dd(src, dst) abort
   if &verbose
     echomsg '[suda]' string(argv)
   endif
-  let job = jobstart(argv, {'pty': v:true})
+  " With pty=true, stdout contains both stdout and stderr. Keep the
+  " diagnostic output separate from the file data handled via if=/of=.
+  let output = []
+  let job = jobstart(argv, {
+        \ 'pty': v:true,
+        \ 'on_stdout': {_, data, _ -> extend(output, data)},
+        \ })
   if job <= 0
+    echomsg '[suda] failed to start run0 PTY job: ' . job
     return 1
   endif
-  return jobwait([job], -1)[0]
+  let status = jobwait([job], -1)[0]
+  if status != 0
+    echomsg '[suda] run0/uutils-dd status: ' . status
+    let detail = join(filter(copy(output), '!empty(v:val)'), "\n")
+    if !empty(detail)
+      echomsg '[suda] output: ' . strtrans(detail)
+    endif
+  endif
+  return status
 endfunction
 
 " {opts} is a list of command line options
