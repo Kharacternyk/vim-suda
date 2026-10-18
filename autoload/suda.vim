@@ -29,7 +29,7 @@ function! s:run0_dd(src, dst) abort
   let output = []
   let job = jobstart(argv, {
         \ 'pty': v:true,
-        \ 'on_stdout': {_, data, _ -> extend(output, data)},
+        \ 'on_stdout': {channel, data, event -> extend(output, data)},
         \ })
   if job <= 0
     echomsg '[suda] failed to start run0 PTY job: ' . job
